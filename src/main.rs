@@ -1,6 +1,5 @@
 use bevy::prelude::*;
 use nanorand::{Rng, WyRand};
-use std::f32::consts::*;
 
 fn main() {
     App::new()
@@ -9,6 +8,7 @@ fn main() {
         .insert_resource(NextIterationTimer {
             t: Timer::from_seconds(0.05, true),
         })
+        .insert_resource(FindCenter { select: 1000 })
         .add_startup_system(setup)
         .add_system(tick.before(turn_cyan))
         .add_system(turn_cyan.before(process_spheres))
@@ -38,7 +38,7 @@ fn setup(
         ..default()
     });
 
-    for _ in 0..1000 {
+    for _ in 0..10000 {
         let coordinates = random_position(&mut rng);
         commands
             .spawn_bundle(PbrBundle {
@@ -85,53 +85,78 @@ fn tick(time: Res<Time>, mut t: ResMut<NextIterationTimer>) {
 }
 
 fn process_spheres(
-    mut spheres_query: Query<(
-        Entity,
-        &mut Marker,
-        &Transform,
-        &mut Handle<StandardMaterial>,
-    )>,
+    mut spheres_query: Query<(Entity, &Marker, &Transform, &mut Handle<StandardMaterial>)>,
     mut commands: Commands,
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut flip: ResMut<Flip>,
     t: Res<NextIterationTimer>,
+    find_center: Res<FindCenter>,
 ) {
     if t.t.finished() {
         if flip.b {
-            for (_, _, _, mut mat) in spheres_query.iter_mut().filter(|v| !v.1.visited).take(3) {
+            for (_, _, _, mut mat) in spheres_query
+                .iter_mut()
+                .filter(|v| !v.1.visited)
+                .take(find_center.select)
+            {
                 *mat = materials.add(Color::CRIMSON.into());
             }
         } else {
-            let mut spheres = spheres_query.iter_mut().collect::<Vec<_>>();
-            let mut unvisited = spheres.iter_mut().filter(|v| !v.1.visited);
-            if let (Some(first), Some(second), Some(third)) =
-                (unvisited.next(), unvisited.next(), unvisited.next())
-            {
-                first.1.visited = true;
-                second.1.visited = true;
-                third.1.visited = true;
-                let (a, b, c) = dbg!(angles(first.2, second.2, third.2));
-                if a > b && a > c {
-                    dbg!(first.2.translation);
-                    commands.entity(second.0).despawn_recursive();
-                    commands.entity(third.0).despawn_recursive();
-                } else if b > a && b > c {
-                    dbg!(second.2.translation);
-                    commands.entity(first.0).despawn_recursive();
-                    commands.entity(third.0).despawn_recursive();
-                } else {
-                    dbg!(third.2.translation);
-                    commands.entity(first.0).despawn_recursive();
-                    commands.entity(second.0).despawn_recursive();
-                }
-            } else {
-                for t in spheres.iter_mut() {
-                    t.1.visited = false;
-                }
+            let spheres = spheres_query
+                .iter()
+                .map(|v| (v.0, v.2.clone()))
+                .take(find_center.select)
+                .collect::<Vec<_>>();
+            let to_remove = find_center.remove(&spheres);
+            for e in to_remove {
+                commands.entity(e).despawn_recursive();
             }
         }
 
         flip.b = !flip.b;
+    }
+
+    if spheres_query.iter().len() == 1 {
+        for (_, _, t, _) in spheres_query.iter() {
+            println!("{t:?}");
+        }
+    }
+}
+
+struct FindCenter {
+    select: usize,
+}
+
+impl FindCenter {
+    fn remove(&self, values: &[(Entity, Transform)]) -> Vec<Entity> {
+        if values.len() <= 1 {
+            return Vec::new();
+        }
+        if let Some((e, _, _)) = values
+            .iter()
+            .map(|(e, t)| {
+                let others: Vec<_> = values.iter().filter(|o| o.0 != *e).map(|o| o.1).collect();
+                let d = FindCenter::mean_distance(t, &others);
+                (e, t, d)
+            })
+            .min_by(|(_, _, d1), (_, _, d2)| d1.total_cmp(&d2))
+        {
+            values
+                .iter()
+                .filter(|o| o.0 != *e)
+                .map(|(e, _)| *e)
+                .collect()
+        } else {
+            vec![]
+        }
+    }
+
+    fn mean_distance(t: &Transform, others: &[Transform]) -> f32 {
+        others
+            .iter()
+            .map(|o| distance(t, o)) // * distance(t, o))
+            .sum::<f32>()
+            / others.len() as f32
     }
 }
 
